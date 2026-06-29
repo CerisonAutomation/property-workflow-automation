@@ -1,0 +1,270 @@
+{
+  "name": "Malta Eco Tax — Guesty Webhook → Sheets → Stripe → Gmail",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "guesty-reservation",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      },
+      "id": "node-webhook",
+      "name": "Guesty Reservation Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize Guesty reservation payload\n// Adjust field paths here if your Guesty webhook shape differs\nconst body = $input.first().json.body ?? $input.first().json;\n\nconst data = body.data ?? body;\n\nconst checkIn  = new Date(data.checkIn  ?? data.check_in  ?? data.checkInDate);\nconst checkOut = new Date(data.checkOut ?? data.check_out ?? data.checkOutDate);\n\nconst nights = Math.max(\n  1,\n  Math.round((checkOut - checkIn) / (1000 * 60 * 60 * 24))\n);\n\nconst guestsCount = parseInt(data.guestsCount ?? data.guests_count ?? data.numberOfGuests ?? 1, 10);\nconst ecoTax      = parseFloat((guestsCount * nights * 0.50).toFixed(2));\n\nconst guest = data.guest ?? data.guestInfo ?? {};\n\nreturn [\n  {\n    json: {\n      reservationId:  data._id        ?? data.id ?? \"unknown\",\n      listingId:      data.listingId  ?? data.listing_id ?? \"\",\n      listingName:    data.listingName ?? data.listing?.title ?? \"Property\",\n      checkIn:        checkIn.toISOString().split(\"T\")[0],\n      checkOut:       checkOut.toISOString().split(\"T\")[0],\n      nights,\n      guestsCount,\n      ecoTax,\n      guestName:  `${guest.firstName ?? guest.first_name ?? \"Guest\"} ${guest.lastName ?? guest.last_name ?? \"\"}`.trim(),\n      guestEmail: guest.email ?? data.guestEmail ?? \"\",\n      currency:   \"EUR\",\n      status:     data.status ?? \"confirmed\",\n      requestedAt: new Date().toISOString(),\n    }\n  }\n];"
+      },
+      "id": "node-normalize",
+      "name": "Normalize Reservation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.guestEmail }}",
+              "operation": "isNotEmpty"
+            },
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "notEqual",
+              "value2": "cancelled"
+            }
+          ],
+          "number": [
+            {
+              "value1": "={{ $json.ecoTax }}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "node-filter",
+      "name": "Guard — Valid & Not Cancelled",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": "REPLACE_WITH_GOOGLE_SHEET_ID",
+        "sheetName": "EcoTaxLog",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Timestamp":     "={{ $json.requestedAt }}",
+            "ReservationID": "={{ $json.reservationId }}",
+            "ListingName":   "={{ $json.listingName }}",
+            "GuestName":     "={{ $json.guestName }}",
+            "GuestEmail":    "={{ $json.guestEmail }}",
+            "CheckIn":       "={{ $json.checkIn }}",
+            "CheckOut":      "={{ $json.checkOut }}",
+            "Nights":        "={{ $json.nights }}",
+            "Guests":        "={{ $json.guestsCount }}",
+            "EcoTax_EUR":    "={{ $json.ecoTax }}",
+            "PaymentStatus": "pending",
+            "StripeLink":    ""
+          }
+        }
+      },
+      "id": "node-sheets-log",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.stripe.com/v1/payment_links",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.STRIPE_SECRET_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "line_items[0][price_data][currency]",
+              "value": "eur"
+            },
+            {
+              "name": "line_items[0][price_data][product_data][name]",
+              "value": "=Malta Eco Tax — {{ $json.listingName }}"
+            },
+            {
+              "name": "line_items[0][price_data][product_data][description]",
+              "value": "={{ $json.nights }} night(s) × {{ $json.guestsCount }} guest(s) × €0.50"
+            },
+            {
+              "name": "line_items[0][price_data][unit_amount]",
+              "value": "={{ Math.round($json.ecoTax * 100) }}"
+            },
+            {
+              "name": "line_items[0][quantity]",
+              "value": "1"
+            },
+            {
+              "name": "metadata[reservation_id]",
+              "value": "={{ $json.reservationId }}"
+            },
+            {
+              "name": "metadata[guest_email]",
+              "value": "={{ $json.guestEmail }}"
+            },
+            {
+              "name": "metadata[listing_id]",
+              "value": "={{ $json.listingId }}"
+            },
+            {
+              "name": "after_completion[type]",
+              "value": "redirect"
+            },
+            {
+              "name": "after_completion[redirect][url]",
+              "value": "https://christianopropertymanagement.com/thank-you"
+            }
+          ]
+        }
+      },
+      "id": "node-stripe",
+      "name": "Create Stripe Payment Link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge normalized data with Stripe payment link URL\nconst normalized = $('Normalize Reservation').first().json;\nconst stripeData  = $input.first().json;\n\nreturn [\n  {\n    json: {\n      ...normalized,\n      stripePaymentLink: stripeData.url,\n      stripePaymentLinkId: stripeData.id,\n    }\n  }\n];"
+      },
+      "id": "node-merge",
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.guestEmail }}",
+        "subject": "=Malta Eco Tax — Your stay at {{ $json.listingName }}",
+        "emailType": "html",
+        "message": "=<p>Dear {{ $json.guestName }},</p>\n\n<p>Thank you for your upcoming stay at <strong>{{ $json.listingName }}</strong>.</p>\n\n<p>As required by Maltese law, we collect a <strong>Malta Eco Contribution</strong> of €0.50 per person per night.\nFor your reservation of <strong>{{ $json.nights }} night(s)</strong> with <strong>{{ $json.guestsCount }} guest(s)</strong>,\nthe total contribution is <strong>€{{ $json.ecoTax }}</strong>.</p>\n\n<p>Please pay securely using the link below:</p>\n\n<p><a href=\"{{ $json.stripePaymentLink }}\" style=\"background:#1a1a1a;color:#fff;padding:12px 24px;text-decoration:none;border-radius:6px;\">Pay Malta Eco Tax — €{{ $json.ecoTax }}</a></p>\n\n<p>This payment is required prior to check-in on <strong>{{ $json.checkIn }}</strong>.</p>\n\n<p>If you have any questions, please reply to this email.</p>\n\n<p>Warm regards,<br/>Christiano Property Management<br/>Malta</p>",
+        "options": {
+          "replyTo": "info@christianopropertymanagement.com"
+        }
+      },
+      "id": "node-email",
+      "name": "Email Guest — Payment Request",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [1340, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": "REPLACE_WITH_GOOGLE_SHEET_ID",
+        "sheetName": "EcoTaxLog",
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "ReservationID",
+              "lookupValue": "={{ $json.reservationId }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "PaymentStatus": "link_sent",
+            "StripeLink": "={{ $json.stripePaymentLink }}",
+            "EmailSentAt": "={{ new Date().toISOString() }}"
+          }
+        }
+      },
+      "id": "node-sheets-update",
+      "name": "Update Sheet — Link Sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [1560, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Skipped — log reason\nconst data = $input.first().json;\nconsole.log(`[EcoTax] Skipped reservation ${data.reservationId}: status=${data.status}, email=${data.guestEmail}, tax=${data.ecoTax}`);\nreturn [{ json: { skipped: true, reason: 'cancelled_or_invalid', reservationId: data.reservationId } }];"
+      },
+      "id": "node-skip",
+      "name": "Log Skip (Cancelled or Invalid)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 500]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Final summary node\nconst data = $input.first().json;\nreturn [\n  {\n    json: {\n      success: true,\n      reservationId: data.reservationId,\n      guestEmail: data.guestEmail,\n      ecoTax: data.ecoTax,\n      stripePaymentLink: data.stripePaymentLink,\n      completedAt: new Date().toISOString(),\n    }\n  }\n];"
+      },
+      "id": "node-done",
+      "name": "Done — Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 400]
+    }
+  ],
+  "connections": {
+    "Guesty Reservation Webhook": {
+      "main": [[{ "node": "Normalize Reservation", "type": "main", "index": 0 }]]
+    },
+    "Normalize Reservation": {
+      "main": [[{ "node": "Guard — Valid & Not Cancelled", "type": "main", "index": 0 }]]
+    },
+    "Guard — Valid & Not Cancelled": {
+      "main": [
+        [{ "node": "Log to Google Sheets", "type": "main", "index": 0 }],
+        [{ "node": "Log Skip (Cancelled or Invalid)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Log to Google Sheets": {
+      "main": [[{ "node": "Create Stripe Payment Link", "type": "main", "index": 0 }]]
+    },
+    "Create Stripe Payment Link": {
+      "main": [[{ "node": "Merge Data", "type": "main", "index": 0 }]]
+    },
+    "Merge Data": {
+      "main": [[{ "node": "Email Guest — Payment Request", "type": "main", "index": 0 }]]
+    },
+    "Email Guest — Payment Request": {
+      "main": [[{ "node": "Update Sheet — Link Sent", "type": "main", "index": 0 }]]
+    },
+    "Update Sheet — Link Sent": {
+      "main": [[{ "node": "Done — Summary", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": ["eco-tax", "guesty", "stripe", "malta", "property-management"],
+  "triggerCount": 1,
+  "updatedAt": "2026-06-29T10:57:00.000Z",
+  "versionId": "1"
+}
