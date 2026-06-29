@@ -1,74 +1,71 @@
 # Property Workflow Automation
 
-**Production property operations automation** built for Christiano Property Management, Malta. Automates booking reconciliation, guest communication, eco-tax collection, reservation-driven access control, and admin workflows.
+**Property ops automation** — booking reconciliation, eco-tax collection, reservation-driven gate access control, automated guest communications, and secure HMAC-verified webhook workflows. Built for Christiano Vincenti Property Management, Malta.
 
-[![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-enabled-4285F4?style=flat&logo=google)]()
-[![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?style=flat&logo=fastapi)]()
-[![Python](https://img.shields.io/badge/Python-3.10+-blue?style=flat&logo=python)]()
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat&logo=python)]()
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.111-009688?style=flat&logo=fastapi)]()
+[![Tests](https://img.shields.io/badge/Tests-pytest-brightgreen?style=flat)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey?style=flat)]()
 
 ---
 
-## What it automates
+## Structure
 
-| Workflow | How |
+```
+property-workflow-automation/
+├── workflows/
+│   ├── booking_reconciliation.py   # Poll + diff bookings across two sources
+│   ├── eco_tax_collector.py        # Malta eco-tax calculation and collection
+│   ├── access_control.py           # Reservation-driven gate access provisioning
+│   ├── guest_comms.py              # Confirmation, check-in instructions, reminders
+│   └── webhook_handler.py          # FastAPI router — event dispatcher with decorator registry
+├── security/
+│   └── webhook_verification.py     # HMAC-SHA256 signature verification
+├── tests/
+│   ├── test_booking_reconciliation.py
+│   ├── test_access_control.py
+│   └── test_webhook_verification.py
+├── app.py                          # FastAPI entry point
+├── requirements.txt
+├── Makefile
+└── .env.example
+```
+
+---
+
+## Quick start
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+make dev
+# API available at http://localhost:8001
+```
+
+---
+
+## Run tests
+
+```bash
+make test
+# or
+pytest tests/ -v
+```
+
+---
+
+## Webhook events handled
+
+| Event | Action |
 |---|---|
-| Booking reconciliation | API polling + Google Apps Script |
-| Guest communication | Event-driven webhook flows |
-| Eco-tax collection | Scheduled cron + audit trail |
-| Transfer handling | Reservation event triggers |
-| Property access control | Reservation-driven token generation |
-| Admin inbox management | Automated triage and follow-up |
+| `reservation.created` | Send confirmation email + provision gate access code |
+| `reservation.cancelled` | Revoke gate access code |
+| `reservation.modified` | Update access code window |
 
----
-
-## Architecture
-
-```
-Triggers        Webhooks · Cron jobs · API polling · Reservation events
-Processing      Google Apps Script · FastAPI · Python
-Security        OAuth 2.0 · JWT · HMAC-SHA256 · Token management
-Reliability     Idempotency · Schema validation · Retry logic · Audit trails
-Storage         PostgreSQL · Supabase · Redis-backed state
-```
-
----
-
-## Key outcomes
-
-- Removed repeated admin work across inbox, reservations, and operational follow-up
-- Stable and auditable workflows with idempotent request handling
-- Reservation-driven access control with token-based security
-- Production-deployed for live property operations in Malta
-
----
-
-## Security patterns used
-
-```python
-# HMAC-SHA256 webhook verification
-import hmac, hashlib
-
-def verify_webhook(payload: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(f"sha256={expected}", signature)
-```
-
----
-
-## Idempotency pattern
-
-```python
-# Idempotent request handler — prevents duplicate processing
-async def process_event(event_id: str, payload: dict):
-    if await redis.exists(f"processed:{event_id}"):
-        return {"status": "already_processed"}
-    await redis.setex(f"processed:{event_id}", 86400, "1")
-    return await handle_payload(payload)
-```
+All webhook requests are HMAC-SHA256 verified before processing.
 
 ---
 
 ## Built by
 
-> [Cerison Brown](https://github.com/CerisonAutomation) — Automation Engineer specialising in property ops automation, secure API integrations, and production workflow engineering.
+> [Cerison Brown](https://github.com/CerisonAutomation) — Automation Engineer specialising in property ops platforms, secure webhook integrations, and production Python workflow systems.
